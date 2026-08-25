@@ -45,7 +45,9 @@ Safety
 """
 
 import json
+import os
 import shlex
+import time
 import traceback
 
 
@@ -810,6 +812,47 @@ def cmd_demo(ctx, data):
 # command's first key argument is prefixed with the app namespace.
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Safe-console denylist
+#
+# Destructive or server-compromising commands are blocked at the raw endpoint
+# (and at the transactions endpoint) unless an operator has explicitly
+# enabled them through backend configuration. The gate consults an
+# operator-set environment variable (REDIS_CONSOLE_ALLOW_DANGEROUS) and a
+# bound action parameter (ALLOW_DANGEROUS). A browser-supplied flag is
+# intentionally NOT consulted, so the frontend cannot bypass the denylist on
+# its own — the restriction is authoritative on the backend.
+# ---------------------------------------------------------------------------
+
+DANGEROUS_COMMANDS = {
+    "flushall", "flushdb", "shutdown", "config", "debug", "module",
+    "slaveof", "replicaof", "migrate", "restore", "acl", "script",
+    "function",
+}
+
+
+def _truthy(value):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on")
+    if isinstance(value, (int, float)):
+        return value != 0
+    return False
+
+
+def _dangerous_allowed(data):
+    """True only when backend configuration explicitly enables dangerous
+    commands. Honors an operator-set env var (REDIS_CONSOLE_ALLOW_DANGEROUS)
+    or a bound action parameter (ALLOW_DANGEROUS). Browser-supplied fields are
+    not consulted, so the frontend cannot bypass the denylist by itself."""
+    if _truthy(os.getenv("REDIS_CONSOLE_ALLOW_DANGEROUS")):
+        return True
+    if _truthy(data.get("ALLOW_DANGEROUS")):
+        return True
+    return False
+
+
 # Commands whose first argument is NOT a key (no prefixing).
 _TX_NO_KEY_COMMANDS = {
     "ping", "info", "dbsize", "flushdb", "config", "client", "time",
@@ -853,6 +896,16 @@ def cmd_transactions(ctx, data):
         if not isinstance(entry, list) or not entry:
             return err(f"Invalid command entry: {entry!r}", "RedisCommandError")
         cmd_name = str(entry[0]).lower()
+        # Enforce the safe-console denylist on transaction pipelines too.
+        if cmd_name == "keys":
+            return err("KEYS is blocked (use the SCAN operation instead)",
+                       "RedisCommandError")
+        if cmd_name in DANGEROUS_COMMANDS and not _dangerous_allowed(data):
+            return err(
+                f"{cmd_name.upper()} is blocked by the safe-console denylist. "
+                "A backend operator can enable it via "
+                "REDIS_CONSOLE_ALLOW_DANGEROUS.",
+                "RedisCommandError", blocked=True, command=cmd_name)
         args = list(entry[1:])
         prefixed = _prefix_tx_args(ctx, cmd_name, args)
         try:
@@ -875,9 +928,12 @@ def cmd_transactions(ctx, data):
 # ---------------------------------------------------------------------------
 # Raw commands
 #
-# Accepts a command line (string) or a structured list. Key arguments are
-# prefixed with ctx.REDIS_PREFIX; meta/no-key commands run as-is. Uses
-# redis.execute_command so arbitrary verbs are reachable.
+# Accepts a command line (string) or a structured list. The line is parsed
+# with shlex (quoted arguments supported; never eval / shell execution). Key
+# arguments are prefixed with ctx.REDIS_PREFIX; meta/no-key commands run
+# as-is. Destructive / server-compromising commands are blocked by the
+# safe-console denylist unless backend configuration explicitly enables them.
+# Execution duration is measured and returned as duration_ms.
 # ---------------------------------------------------------------------------
 
 _RAW_NO_KEY_COMMANDS = {
@@ -905,51 +961,66 @@ def _prefix_raw_args(ctx, cmd_name, args):
     return out
 
 
+def _parse_command_line(line):
+    """Parse a raw command line into a list of arguments, honoring single
+    and double quotes and backslash escapes via shlex. Never uses eval or
+    shell execution. Returns (parts, None) on success or (None, message) on a
+    parse error so the caller can surface an explicit error instead of
+    silently mis-splitting quoted arguments."""
+    if not isinstance(line, str):
+        return (None, "Command must be a string")
+    line = line.strip()
+    if not line:
+        return (None, "Empty command")
+    try:
+        parts = shlex.split(line, posix=True)
+    except ValueError as e:
+        return (None, f"Parse error: {e}")
+    if not parts:
+        return (None, "Empty command")
+    return (parts, None)
+
+
 def cmd_raw(ctx, data):
     r = ctx.REDIS
     raw = data.get("command")
     if not raw:
         return err("Missing 'command'", "RedisCommandError")
 
-    if isinstance(raw, str):
-        parts = _split_command_line(raw)
-    else:
-        parts = [str(p) for p in _as_list(raw)]
-    if not parts:
-        return err("Empty command", "RedisCommandError")
+    parts, parse_err = _parse_command_line(raw)
+    if parse_err:
+        return err(parse_err, "RedisCommandError")
 
     cmd_name = parts[0].lower()
-    # Block dangerous unbounded commands explicitly.
+
+    # KEYS is unbounded; route the user to the bounded SCAN operation instead.
     if cmd_name == "keys":
         return err("KEYS is blocked (use the SCAN operation instead)",
                    "RedisCommandError")
-    if cmd_name in {"flushall", "flushdb"} and not _is_meta_allowed(data):
-        return err(f"{cmd_name.upper()} is blocked from the raw endpoint",
-                   "RedisCommandError")
+
+    # Destructive / server-compromising commands are blocked unless the
+    # operator has explicitly enabled them through backend configuration.
+    if cmd_name in DANGEROUS_COMMANDS and not _dangerous_allowed(data):
+        return err(
+            f"{cmd_name.upper()} is blocked by the safe-console denylist. "
+            "A backend operator can enable it via "
+            "REDIS_CONSOLE_ALLOW_DANGEROUS.",
+            "RedisCommandError", blocked=True, command=cmd_name)
 
     args = _prefix_raw_args(ctx, cmd_name, parts[1:])
 
+    start = time.monotonic()
     try:
         result = r.execute_command(cmd_name, *args)
     except Exception as e:
         mapped = map_exception(e)
         mapped["command"] = cmd_name
+        mapped["duration_ms"] = round((time.monotonic() - start) * 1000.0, 2)
         return mapped
 
-    return ok(command=cmd_name, args=args, result=_jsonable(result))
-
-
-def _split_command_line(line):
-    """Split a raw command line respecting single/double quotes."""
-    try:
-        return shlex.split(line)
-    except ValueError:
-        return line.split()
-
-
-def _is_meta_allowed(data):
-    """Raw meta commands like FLUSHDB require an explicit allow flag."""
-    return bool(data.get("allow_meta"))
+    duration_ms = round((time.monotonic() - start) * 1000.0, 2)
+    return ok(command=cmd_name, args=args, result=_jsonable(result),
+              duration_ms=duration_ms)
 
 
 # ---------------------------------------------------------------------------

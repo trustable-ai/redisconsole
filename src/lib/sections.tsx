@@ -110,10 +110,10 @@ export const SECTIONS: SectionDef[] = [
   },
   {
     id: "raw",
-    label: "Raw Commands",
+    label: "Console",
     path: "/raw",
     icon: Terminal,
-    description: "Execute arbitrary Redis commands directly.",
+    description: "Terminal-style raw Redis console: history, quoted-argument parsing, execution duration, and an authoritative backend denylist for dangerous commands.",
   },
 ];
 

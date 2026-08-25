@@ -24,7 +24,44 @@ single public action, `v1/console`, that uses the generated Redis wiring
 ## Sections
 
 Overview · Keys · Strings · Hashes · Lists · Sets · Sorted Sets · Streams ·
-Pub/Sub · TTL · Transactions · Raw Commands
+Pub/Sub · TTL · Transactions · Console
+
+### Console — Safe Raw Redis Terminal
+
+The Console section (`/raw`, labelled “Console” in the sidebar) is a
+terminal-like raw Redis console. The browser sends each typed command to the
+`v1/console` action with `cmd: "raw"`; the frontend never connects to Redis
+directly.
+
+Frontend behaviour:
+
+- Command history persisted for the browser session (`localStorage`), with
+  Up/Down arrow navigation.
+- Enter executes the command.
+- Multi-line, redis-cli-style output rendering (quoted strings, numbered
+  array elements, `(nil)` for null).
+- Execution duration shown per command (backend-measured `duration_ms`).
+- Errors rendered in red.
+- Clear-console button (and a separate clear-history button).
+
+Backend behaviour (`packages/v1/console/console.py`, `cmd_raw`):
+
+- Commands are parsed with `shlex` so quoted arguments such as
+  `SET message "hello world"` are handled correctly. No `eval` or shell
+  execution is used.
+- A backend-authoritative denylist blocks destructive / server-compromising
+  commands: `FLUSHALL`, `FLUSHDB`, `SHUTDOWN`, `CONFIG`, `DEBUG`, `MODULE`,
+  `SLAVEOF`, `REPLICAOF`, `MIGRATE`, `RESTORE`, `ACL`, `SCRIPT`, `FUNCTION`,
+  and `KEYS` (use SCAN instead). The same denylist is enforced on the
+  transactions endpoint.
+- The denylist cannot be bypassed from the frontend: a browser-supplied
+  `allow_dangerous` / `allow_meta` flag is ignored. An operator can explicitly
+  enable the blocked commands only through backend configuration — the
+  environment variable `REDIS_CONSOLE_ALLOW_DANGEROUS` or a bound action
+  parameter `ALLOW_DANGEROUS` set to a truthy value.
+- The first key argument is automatically namespaced with the app prefix; no
+  meta/no-key commands receive a prefix.
+- The Redis execution duration is measured and returned as `duration_ms`.
 
 ### Keys — Visual Key Explorer
 
