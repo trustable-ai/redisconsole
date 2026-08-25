@@ -23,8 +23,27 @@ single public action, `v1/console`, that uses the generated Redis wiring
 
 ## Sections
 
-Overview · Keys · Strings · Hashes · Lists · Sets · Sorted Sets · Streams ·
-Pub/Sub · TTL · Transactions · Console
+Overview · Keys · Laboratories · Strings · Hashes · Lists · Sets · Sorted Sets ·
+Streams · Pub/Sub · TTL · Transactions · Console · Reference
+
+### Overview — Live Dashboard
+
+The Overview section (`/overview`) is a read-only dashboard fed by Redis
+`INFO` and `DBSIZE` through the `v1/console` `status` action (`detail: true`).
+It surfaces: connection status, Redis version, uptime, connected clients, used
+memory (with peak), total keys (`DBSIZE`), current database (with keyspace
+breakdown), hit rate (from `keyspace_hits`/`keyspace_misses`), expired keys,
+and evicted keys. Hit rate is tone-coded (green ≥ 80%, amber ≥ 50%, red below).
+
+### Reference — Educational Command Reference
+
+The Reference section (`/reference`) is a static, frontend-only curated
+reference of common Redis commands (`src/lib/redis-commands.ts`). It never
+calls Redis. Users filter by category (Generic, String, Hash, List, Set,
+Sorted Set, Stream, Pub/Sub, Transactions, Server) and search by
+command/description/syntax. Each entry expands to show the syntax,
+argument explanations (with optional markers), and a worked example with its
+expected output. Commands are rendered with token-level syntax highlighting.
 
 ### Console — Safe Raw Redis Terminal
 
@@ -104,6 +123,14 @@ panel for each section.
   (`redisconsole2:`).
 - Pub/Sub `PUBLISH` may be restricted by the platform Redis ACL; `SUBSCRIBE`
   requires a long-lived connection that serverless actions cannot hold, so only
-  publish + channel discovery are exposed.
+  publish + channel discovery are exposed. The Pub/Sub section explains this
+  limitation in the UI rather than faking subscription behavior.
+- Transactions (`/transactions`) demonstrate `MULTI`/`EXEC`, `MULTI`/`DISCARD`,
+  and `WATCH`/`MULTI`/`EXEC`. Because OpenServerless requests may use separate
+  Redis connections, the whole transaction runs in a single backend action on
+  one redis-py pipeline / connection so the `WATCH` lock is held by the same
+  client that issues `EXEC`. A built-in "interfere" toggle mutates the watched
+  key between `WATCH` and `EXEC` on that same connection to deterministically
+  demonstrate the optimistic-lock abort path.
 - Application `.env` / `.env.production` are managed by Trustable, not by this
   code.

@@ -12,6 +12,7 @@ import {
   GitBranch,
   Terminal,
   FlaskConical,
+  BookOpen,
   type LucideIcon,
 } from "lucide-react";
 
@@ -114,6 +115,13 @@ export const SECTIONS: SectionDef[] = [
     path: "/raw",
     icon: Terminal,
     description: "Terminal-style raw Redis console: history, quoted-argument parsing, execution duration, and an authoritative backend denylist for dangerous commands.",
+  },
+  {
+    id: "reference",
+    label: "Reference",
+    path: "/reference",
+    icon: BookOpen,
+    description: "Educational command reference: filter by category and expand any command for its syntax, arguments, and a worked example.",
   },
 ];
 

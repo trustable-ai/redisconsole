@@ -16,6 +16,7 @@ import PubSubPage from "@/pages/sections/PubSubPage";
 import TtlPage from "@/pages/sections/TtlPage";
 import TransactionsPage from "@/pages/sections/TransactionsPage";
 import RawPage from "@/pages/sections/RawPage";
+import ReferencePage from "@/pages/sections/ReferencePage";
 import LaboratoriesPage from "@/pages/LaboratoriesPage";
 import NotFound from "@/pages/NotFound";
 
@@ -42,6 +43,7 @@ const App = () => (
             <Route path="/ttl" element={<TtlPage />} />
             <Route path="/transactions" element={<TransactionsPage />} />
             <Route path="/raw" element={<RawPage />} />
+            <Route path="/reference" element={<ReferencePage />} />
             <Route path="/laboratories" element={<LaboratoriesPage />} />
           </Route>
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

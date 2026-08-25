@@ -215,6 +215,36 @@ def _jsonable(value):
 # Connection / status
 # ---------------------------------------------------------------------------
 
+def _parse_keyspace_entry(value):
+    """Parse a Redis INFO keyspace entry into a dict of ints.
+
+    redis-py already parses the keyspace section into dicts (e.g.
+    {"keys": 12, "expires": 0, "avg_ttl": 0}); in that case the entry is
+    returned with int values normalized. A raw 'keys=12,expires=0' string is
+    parsed manually. Returns {} on unexpected input.
+    """
+    if isinstance(value, dict):
+        out = {}
+        for k, v in value.items():
+            try:
+                out[str(k)] = int(v)
+            except (TypeError, ValueError):
+                out[str(k)] = v
+        return out
+    out = {}
+    if not isinstance(value, str):
+        return out
+    for part in value.split(","):
+        if "=" not in part:
+            continue
+        k, v = part.split("=", 1)
+        try:
+            out[k.strip()] = int(v)
+        except (TypeError, ValueError):
+            out[k.strip()] = v
+    return out
+
+
 def cmd_status(ctx, data):
     r = ctx.REDIS
     prefix = getattr(ctx, "REDIS_PREFIX", "") or ""
@@ -225,20 +255,14 @@ def cmd_status(ctx, data):
         return err(f"Redis unreachable: {e}", "RedisConnectionError",
                    connected=False, prefix=prefix)
 
-    info = {}
-    if data.get("detail"):
+    detail = bool(data.get("detail"))
+    info_full = {}
+    if detail:
         try:
-            info = r.info()
+            info_full = r.info()
         except Exception as e:
             return err(f"INFO failed: {e}", "RedisCommandError",
                        connected=True, prefix=prefix)
-        section = {}
-        for key in ("redis_version", "redis_mode", "os", "arch_bits",
-                    "uptime_in_seconds", "connected_clients",
-                    "used_memory_human", "db0"):
-            if key in info:
-                section[key] = info[key]
-        info = section
 
     try:
         dbsize = r.dbsize()
@@ -246,7 +270,70 @@ def cmd_status(ctx, data):
         return err(f"DBSIZE failed: {e}", "RedisCommandError",
                    connected=True, prefix=prefix)
 
-    return ok(connected=True, dbsize=dbsize, info=info, prefix=prefix)
+    # Backward-compatible narrow `info` object consumed by older UIs.
+    info = {}
+    stats = {}
+    if detail and info_full:
+        for key in ("redis_version", "redis_mode", "os", "arch_bits",
+                    "uptime_in_seconds", "connected_clients",
+                    "used_memory", "used_memory_human", "used_memory_peak_human",
+                    "db0"):
+            if key in info_full:
+                info[key] = info_full[key]
+
+        # Structured metrics for the Overview dashboard.
+        def _num(name):
+            try:
+                return int(info_full.get(name, 0))
+            except (TypeError, ValueError):
+                return 0
+
+        keyspace_hits = _num("keyspace_hits")
+        keyspace_misses = _num("keyspace_misses")
+        total_req = keyspace_hits + keyspace_misses
+        hit_rate = round((keyspace_hits / total_req) * 100, 2) if total_req else None
+
+        # Current database: read from the client's connection kwargs when
+        # available (the platform wires the db via REDIS_URL). Fall back to
+        # scanning the keyspace section for the first non-empty db.
+        current_db = 0
+        try:
+            pool = getattr(r, "connection_pool", None)
+            if pool is not None:
+                current_db = int(pool.connection_kwargs.get("db", 0))
+        except Exception:
+            current_db = 0
+
+        # Per-db keyspace breakdown (db0, db1, ... -> {keys, expires, avg_ttl}).
+        keyspace = {}
+        for k, v in info_full.items():
+            if isinstance(k, str) and k.startswith("db"):
+                keyspace[k] = _parse_keyspace_entry(v)
+
+        stats = {
+            "redis_version": info_full.get("redis_version"),
+            "redis_mode": info_full.get("redis_mode"),
+            "os": info_full.get("os"),
+            "arch_bits": info_full.get("arch_bits"),
+            "uptime_in_seconds": _num("uptime_in_seconds"),
+            "connected_clients": _num("connected_clients"),
+            "used_memory": _num("used_memory"),
+            "used_memory_human": info_full.get("used_memory_human"),
+            "used_memory_peak_human": info_full.get("used_memory_peak_human"),
+            "total_keys": dbsize,
+            "current_db": current_db,
+            "keyspace_hits": keyspace_hits,
+            "keyspace_misses": keyspace_misses,
+            "hit_rate": hit_rate,
+            "expired_keys": _num("expired_keys"),
+            "evicted_keys": _num("evicted_keys"),
+            "rejected_connections": _num("rejected_connections"),
+            "total_connections_received": _num("total_connections_received"),
+            "total_commands_processed": _num("total_commands_processed"),
+            "keyspace": keyspace,
+        }
+
+    return ok(connected=True, dbsize=dbsize, info=info, stats=stats, prefix=prefix)
 
 
 # ---------------------------------------------------------------------------
@@ -889,14 +976,21 @@ def cmd_transactions(ctx, data):
     if not isinstance(commands, list) or not commands:
         return err("Missing 'commands' list", "RedisCommandError")
 
-    use_multi = bool(data.get("multi", True))
-    pipe = r.pipeline(transaction=use_multi)
+    # Mode selects the transaction demonstration. Legacy callers passed a
+    # boolean `multi`; preserve that for backward compatibility.
+    mode = str(data.get("mode") or "").lower()
+    if not mode:
+        mode = "multi" if bool(data.get("multi", True)) else "pipeline"
+    if mode not in ("multi", "pipeline", "discard", "watch"):
+        return err(f"Unknown transaction mode '{mode}'", "RedisCommandError")
+
+    # Validate + queue every command first (denylist enforced here too) so a
+    # bad entry fails before any Redis side-effect.
     parsed = []
     for entry in commands:
         if not isinstance(entry, list) or not entry:
             return err(f"Invalid command entry: {entry!r}", "RedisCommandError")
         cmd_name = str(entry[0]).lower()
-        # Enforce the safe-console denylist on transaction pipelines too.
         if cmd_name == "keys":
             return err("KEYS is blocked (use the SCAN operation instead)",
                        "RedisCommandError")
@@ -908,21 +1002,114 @@ def cmd_transactions(ctx, data):
                 "RedisCommandError", blocked=True, command=cmd_name)
         args = list(entry[1:])
         prefixed = _prefix_tx_args(ctx, cmd_name, args)
+        parsed.append((cmd_name, prefixed))
+
+    # ----- WATCH mode ---------------------------------------------------
+    # The whole demonstration runs on one connection so the WATCH lock is held
+    # by the same client that issues MULTI/EXEC. redis-py's Pipeline supports
+    # this: watch() -> multi() -> <queue> -> execute(); a watched key changed
+    # between WATCH and EXEC raises WatchError on execute().
+    if mode == "watch":
+        watch_keys = _as_list(data.get("watch"))
+        if not watch_keys:
+            return err("WATCH mode requires a 'watch' key list", "RedisCommandError")
+        watch_prefixed = [rkey(ctx, w) for w in watch_keys]
+        # Optionally mutate a watched key *after* WATCH but *before* EXEC to
+        # deterministically demonstrate an aborted transaction (WatchError).
+        interfere_key = data.get("interfere_key")
+        interfere_value = data.get("interfere_value")
+
         try:
-            getattr(pipe, cmd_name)(*prefixed)
-            parsed.append(cmd_name)
+            import redis.exceptions as rexc
+        except Exception:
+            rexc = None
+
+        pipe = r.pipeline()
+        try:
+            pipe.watch(*watch_prefixed)
+        except Exception as e:
+            return map_exception(e)
+
+        # Optionally break the optimistic lock from the same connection.
+        interfered = False
+        if interfere_key is not None and interfere_value is not None:
+            try:
+                r.set(rkey(ctx, interfere_key), str(interfere_value))
+                interfered = True
+            except Exception as e:
+                pipe.reset()
+                return map_exception(e)
+
+        pipe.multi()
+        try:
+            for cmd_name, prefixed in parsed:
+                getattr(pipe, cmd_name)(*prefixed)
         except AttributeError:
+            pipe.reset()
             return err(f"Unknown Redis command '{cmd_name}'", "RedisCommandError")
         except Exception as e:
+            pipe.reset()
             return err(f"Error queueing '{cmd_name}': {e}", "RedisCommandError")
+
+        try:
+            results = pipe.execute()
+        except Exception as e:
+            aborted = rexc is not None and isinstance(e, rexc.WatchError)
+            if aborted:
+                return ok(mode="watch", aborted=True, interfered=interfered,
+                          watch_keys=[strip_prefix(ctx, w) for w in watch_prefixed],
+                          reason="WATCH detected a modification to a watched key; "
+                                 "EXEC aborted the transaction.")
+            return map_exception(e)
+
+        return ok(mode="watch", aborted=False, interfered=interfered,
+                   watch_keys=[strip_prefix(ctx, w) for w in watch_prefixed],
+                   executed=[{"cmd": n, "result": _jsonable(res)}
+                             for n, res in zip([p[0] for p in parsed], results)])
+
+    # ----- DISCARD mode --------------------------------------------------
+    # Queue a MULTI block then DISCARD it: no commands run, the connection
+    # leaves the transaction state, and the queued results are discarded.
+    if mode == "discard":
+        pipe = r.pipeline(transaction=True)
+        try:
+            for cmd_name, prefixed in parsed:
+                getattr(pipe, cmd_name)(*prefixed)
+        except AttributeError:
+            pipe.reset()
+            return err(f"Unknown Redis command '{cmd_name}'", "RedisCommandError")
+        except Exception as e:
+            pipe.reset()
+            return err(f"Error queueing '{cmd_name}': {e}", "RedisCommandError")
+        # reset() issues DISCARD on the server when inside a MULTI block.
+        pipe.reset()
+        return ok(mode="discard", discarded=True,
+                  queued=[p[0] for p in parsed],
+                  executed=[])
+
+    # ----- MULTI / pipeline modes (default) -----------------------------
+    use_multi = mode == "multi"
+    pipe = r.pipeline(transaction=use_multi)
+    queued_names = []
+    try:
+        for cmd_name, prefixed in parsed:
+            getattr(pipe, cmd_name)(*prefixed)
+            queued_names.append(cmd_name)
+    except AttributeError:
+        pipe.reset()
+        return err(f"Unknown Redis command '{cmd_name}'", "RedisCommandError")
+    except Exception as e:
+        pipe.reset()
+        return err(f"Error queueing '{cmd_name}': {e}", "RedisCommandError")
 
     try:
         results = pipe.execute()
     except Exception as e:
         return map_exception(e)
 
-    return ok(executed=[{"cmd": n, "result": _jsonable(res)}
-                        for n, res in zip(parsed, results)])
+    return ok(mode=mode,
+              executed=[{"cmd": n, "result": _jsonable(res)}
+                        for n, res in zip(queued_names, results)])
 
 
 # ---------------------------------------------------------------------------
