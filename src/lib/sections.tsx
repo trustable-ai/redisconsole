@@ -35,7 +35,7 @@ export const SECTIONS: SectionDef[] = [
     label: "Keys",
     path: "/keys",
     icon: Key,
-    description: "Scan, inspect, rename, and delete keys across the database.",
+    description: "Scan keys with a cursor, inspect any key by type, and delete keys — every visual operation shows its Redis command.",
   },
   {
     id: "strings",

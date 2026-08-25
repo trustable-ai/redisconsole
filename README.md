@@ -26,6 +26,37 @@ single public action, `v1/console`, that uses the generated Redis wiring
 Overview · Keys · Strings · Hashes · Lists · Sets · Sorted Sets · Streams ·
 Pub/Sub · TTL · Transactions · Raw Commands
 
+### Keys — Visual Key Explorer
+
+The Keys section is a visual browser, not a command form:
+
+- Search/filter by a glob `pattern` with quick chips (`*`, `user:*`, `session:*`,
+  `cache:*`), a refresh button, and a live key count (loaded so far + DB size).
+- Keys are loaded with a cursor-based `SCAN` (never `KEYS *`), `count` per page,
+  with a **Load more** button that continues the cursor. Each row shows the
+  key name, Redis `TYPE`, and `TTL`.
+- Selecting a key detects its type and opens a type-aware inspector with safe,
+  bounded reads (never the whole huge structure at once):
+  - **String**: value, length, edit (`SET`).
+  - **Hash**: fields via `HSCAN` (paginated), field count (`HLEN`), add/edit/remove
+    field (`HSET`/`HDEL`).
+  - **List**: index/value via `LRANGE` (pageable), length (`LLEN`), `LPUSH`/
+    `RPUSH`/`LPOP`/`RPOP`.
+  - **Set**: members via `SSCAN` (paginated), cardinality (`SCARD`), add/remove
+    member (`SADD`/`SREM`).
+  - **Sorted Set**: rank/member/score via `ZRANGE ... WITHSCORES` (pageable),
+    cardinality (`ZCARD`), add/update (`ZADD`), remove (`ZREM`).
+  - **Stream**: entry id/fields via `XRANGE` (count-bounded), length (`XLEN`),
+    add entry (`XADD`).
+- Every visual operation displays the equivalent raw Redis command so the
+  console doubles as a Redis learning tool.
+- Deleting a key asks for confirmation and runs `DEL`.
+
+The backend gained three ops on `v1/console`: `keys.scan` accepts `withmeta`
+to return `{name,type,ttl}` per key, and `hashes.hscan` / `sets.sscan` provide
+cursor-based, bounded iteration over large hashes/sets instead of `HGETALL` /
+`SMEMBERS`.
+
 The UI is responsive (desktop sidebar, mobile drawer) and includes a Redis
 connection/status indicator, a command execution area, and an output/result
 panel for each section.

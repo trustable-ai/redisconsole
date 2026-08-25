@@ -270,9 +270,27 @@ def cmd_keys(ctx, data):
         else:
             match_pattern = pattern
         cur, keys = r.scan(cursor=cursor, match=match_pattern, count=count)
-        return ok(cursor=cur, scan_complete=(cur == 0),
-                  keys=[strip_prefix(ctx, k) for k in keys],
-                  count=len(keys))
+        names = [strip_prefix(ctx, k) for k in keys]
+        result = ok(cursor=cur, scan_complete=(cur == 0),
+                    keys=names, count=len(names))
+        # Optional per-key metadata for the visual Key Explorer. Bounded by
+        # the SCAN batch size (<= SCAN_COUNT_LIMIT), so a huge database never
+        # triggers one TYPE/TTL call per key across the whole keyspace.
+        if data.get("withmeta"):
+            meta = []
+            for full in keys:
+                kname = strip_prefix(ctx, full)
+                try:
+                    ktype = r.type(full)
+                except Exception:
+                    ktype = "none"
+                try:
+                    ttl = r.ttl(full)
+                except Exception:
+                    ttl = -1
+                meta.append({"name": kname, "type": ktype, "ttl": ttl})
+            result["keyMeta"] = meta
+        return result
 
     key = data.get("key")
     if not key:
@@ -405,6 +423,22 @@ def cmd_hashes(ctx, data):
         if field is None:
             return err("Missing 'field'", "RedisCommandError")
         return ok(exists=bool(r.hexists(k, str(field))))
+    if op == "hscan":
+        # Cursor-based, bounded scan of a (possibly huge) hash. Never loads
+        # the whole structure the way HGETALL would.
+        cursor = _to_int(data.get("cursor"), 0)
+        count = _to_int(data.get("count"), 100)
+        if count <= 0 or count > SCAN_COUNT_LIMIT:
+            count = 100
+        match = data.get("match")
+        kwargs = {"cursor": cursor, "count": count}
+        if match:
+            kwargs["match"] = str(match)
+        cur, fields = r.hscan(k, **kwargs)
+        fields = {str(fk): fv for fk, fv in fields.items()}
+        return ok(key=strip_prefix(ctx, key), cursor=cur,
+                  scan_complete=(cur == 0),
+                  fields=fields, count=len(fields))
     return err(f"Unknown hashes op '{op}'", "RedisCommandError")
 
 
@@ -488,6 +522,21 @@ def cmd_sets(ctx, data):
                   is_member=bool(r.sismember(k, str(target))))
     if op == "scard":
         return ok(key=strip_prefix(ctx, key), cardinality=r.scard(k))
+    if op == "sscan":
+        # Cursor-based, bounded scan of a (possibly huge) set. Never loads
+        # the whole structure the way SMEMBERS would.
+        cursor = _to_int(data.get("cursor"), 0)
+        count = _to_int(data.get("count"), 100)
+        if count <= 0 or count > SCAN_COUNT_LIMIT:
+            count = 100
+        match = data.get("match")
+        kwargs = {"cursor": cursor, "count": count}
+        if match:
+            kwargs["match"] = str(match)
+        cur, members = r.sscan(k, **kwargs)
+        return ok(key=strip_prefix(ctx, key), cursor=cur,
+                  scan_complete=(cur == 0),
+                  members=sorted(members), count=len(members))
     return err(f"Unknown sets op '{op}'", "RedisCommandError")
 
 
