@@ -714,6 +714,95 @@ def cmd_ttl(ctx, data):
 
 
 # ---------------------------------------------------------------------------
+# Demo data laboratories
+#
+# Provides disposable, namespaced example data for the interactive labs.
+# Every demo key lives under the "redis-console:demo:" sub-namespace (which is
+# itself inside the app's ctx.REDIS_PREFIX), so the cleanup op can never touch
+# unrelated user data. Cleanup uses SCAN + DEL, never KEYS.
+# ---------------------------------------------------------------------------
+
+DEMO_NAMESPACE = "redis-console:demo:"
+
+
+def _demo_key(suffix):
+    """Build a demo key suffix path under the demo namespace."""
+    suffix = str(suffix).strip("/")
+    return f"{DEMO_NAMESPACE}{suffix}"
+
+
+def cmd_demo(ctx, data):
+    r = ctx.REDIS
+    op = (data.get("op") or "seed").lower()
+    kind = (data.get("kind") or "").lower().replace("-", "")
+
+    if op == "clean":
+        # Delete every key under the demo namespace (within the app prefix).
+        pattern = rkey(ctx, f"{DEMO_NAMESPACE}*")
+        cursor = 0
+        deleted = 0
+        while True:
+            cursor, keys = r.scan(cursor=cursor, match=pattern, count=200)
+            if keys:
+                deleted += r.delete(*keys)
+            if cursor == 0:
+                break
+        return ok(deleted=deleted)
+
+    if op == "seed":
+        if kind not in ("strings", "hashes", "lists", "sets",
+                        "sortedsets", "streams", "ttl"):
+            return err(f"Unknown demo kind '{kind}'", "RedisCommandError")
+        created = []
+        if kind == "strings":
+            k1 = rkey(ctx, _demo_key("strings:counter"))
+            k2 = rkey(ctx, _demo_key("strings:greeting"))
+            r.set(k1, "0")
+            r.set(k2, "Hello, Redis!")
+            created = [strip_prefix(ctx, k1), strip_prefix(ctx, k2)]
+        elif kind == "hashes":
+            k = rkey(ctx, _demo_key("hashes:user:1"))
+            r.hset(k, mapping={"name": "Ada", "role": "admin", "active": "1"})
+            created = [strip_prefix(ctx, k)]
+        elif kind == "lists":
+            k = rkey(ctx, _demo_key("lists:queue"))
+            r.rpush(k, "first", "second", "third")
+            created = [strip_prefix(ctx, k)]
+        elif kind == "sets":
+            k = rkey(ctx, _demo_key("sets:tags"))
+            r.sadd(k, "redis", "streams", "demo")
+            created = [strip_prefix(ctx, k)]
+        elif kind == "sortedsets":
+            k = rkey(ctx, _demo_key("zset:leaderboard"))
+            r.zadd(k, {"ada": 100, "grace": 85, "alan": 92})
+            created = [strip_prefix(ctx, k)]
+        elif kind == "streams":
+            k = rkey(ctx, _demo_key("streams:events"))
+            for i in range(3):
+                r.xadd(k, {"event": "seed", "seq": str(i)})
+            created = [strip_prefix(ctx, k)]
+        elif kind == "ttl":
+            k = rkey(ctx, _demo_key("ttl:session"))
+            r.set(k, "temp-value", ex=120)
+            created = [strip_prefix(ctx, k)]
+        return ok(kind=kind, created=created)
+
+    if op == "scan":
+        # List demo keys present (within the app prefix).
+        pattern = rkey(ctx, f"{DEMO_NAMESPACE}*")
+        cursor = 0
+        names = []
+        while True:
+            cursor, keys = r.scan(cursor=cursor, match=pattern, count=200)
+            names.extend(strip_prefix(ctx, k) for k in keys)
+            if cursor == 0:
+                break
+        return ok(keys=sorted(names), count=len(names))
+
+    return err(f"Unknown demo op '{op}'", "RedisCommandError")
+
+
+# ---------------------------------------------------------------------------
 # Transactions / pipelines
 #
 # Runs a list of [cmd, key, ...args] tuples through a Redis pipeline (atomic
@@ -880,6 +969,7 @@ DISPATCH = {
     "pubsub": cmd_pubsub,
     "pub-sub": cmd_pubsub,
     "ttl": cmd_ttl,
+    "demo": cmd_demo,
     "transactions": cmd_transactions,
     "raw": cmd_raw,
 }

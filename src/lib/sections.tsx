@@ -11,6 +11,7 @@ import {
   Clock,
   GitBranch,
   Terminal,
+  FlaskConical,
   type LucideIcon,
 } from "lucide-react";
 
@@ -36,6 +37,13 @@ export const SECTIONS: SectionDef[] = [
     path: "/keys",
     icon: Key,
     description: "Scan keys with a cursor, inspect any key by type, and delete keys — every visual operation shows its Redis command.",
+  },
+  {
+    id: "laboratories",
+    label: "Laboratories",
+    path: "/laboratories",
+    icon: FlaskConical,
+    description: "Interactive labs per data structure: explanation, examples, editable parameters, the generated command, response, and before/after visualization.",
   },
   {
     id: "strings",

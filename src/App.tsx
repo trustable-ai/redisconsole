@@ -16,6 +16,7 @@ import PubSubPage from "@/pages/sections/PubSubPage";
 import TtlPage from "@/pages/sections/TtlPage";
 import TransactionsPage from "@/pages/sections/TransactionsPage";
 import RawPage from "@/pages/sections/RawPage";
+import LaboratoriesPage from "@/pages/LaboratoriesPage";
 import NotFound from "@/pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -41,6 +42,7 @@ const App = () => (
             <Route path="/ttl" element={<TtlPage />} />
             <Route path="/transactions" element={<TransactionsPage />} />
             <Route path="/raw" element={<RawPage />} />
+            <Route path="/laboratories" element={<LaboratoriesPage />} />
           </Route>
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
