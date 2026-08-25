@@ -6,7 +6,8 @@ import { Select } from "@/components/ui/select";
 
 const OPS = [
   { value: "xadd", label: "XADD — append an entry" },
-  { value: "xrange", label: "XRANGE — read entries" },
+  { value: "xrange", label: "XRANGE — read entries (oldest first)" },
+  { value: "xrevrange", label: "XREVRANGE — read entries (newest first)" },
   { value: "xlen", label: "XLEN — stream length" },
   { value: "xdel", label: "XDEL — delete entry/entries" },
 ];
@@ -24,6 +25,7 @@ export default function StreamsPage() {
     const p: Record<string, unknown> = { cmd: "streams", op, key };
     if (op === "xadd") { p.id = id; try { p.fields = JSON.parse(fields); } catch { /* invalid */ } }
     if (op === "xrange") { p.min = min; p.max = max; }
+    if (op === "xrevrange") { p.min = min; p.max = max; }
     if (op === "xdel") p.ids = ids.split(",").map((s) => s.trim()).filter(Boolean);
     return p;
   };
@@ -46,7 +48,7 @@ export default function StreamsPage() {
           </Field>
         </>
       )}
-      {op === "xrange" && (
+      {(op === "xrange" || op === "xrevrange") && (
         <div className="grid grid-cols-2 gap-3">
           <Field label="Min" htmlFor="x-min">
             <Input id="x-min" value={min} onChange={(e) => setMin(e.target.value)} placeholder="-" />
