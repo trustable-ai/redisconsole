@@ -6,6 +6,8 @@ Apache OpenServerless actions on the backend. All Redis operations go through a
 single public action, `v1/console`, that uses the generated Redis wiring
 (`ctx.REDIS` / `ctx.REDIS_PREFIX`).
 
+![](screenshot.png)
+
 ## Architecture
 
 - **Frontend** (`src/`): React + TypeScript + Tailwind, HashRouter, shadcn/ui.
