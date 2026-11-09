@@ -134,5 +134,5 @@ panel for each section.
   client that issues `EXEC`. A built-in "interfere" toggle mutates the watched
   key between `WATCH` and `EXEC` on that same connection to deterministically
   demonstrate the optimistic-lock abort path.
-- Application `.env` / `.env.production` are managed by Trustable, not by this
+- Application `.env` / `.env.production` are managed by Trustant, not by this
   code.
